@@ -1,0 +1,18 @@
+include LICENSE
+include README.md
+include THIRD_PARTY_NOTICES.md
+include coriro/py.typed
+
+exclude .gitignore
+recursive-exclude docs *
+recursive-exclude tests *
+recursive-exclude benchmark *
+recursive-exclude coriro/adapters *
+recursive-exclude coriro/benchmark *
+recursive-exclude .coriro-audit *
+recursive-exclude examples *
+recursive-exclude *.egg-info *
+
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .DS_Store
