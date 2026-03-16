@@ -192,15 +192,15 @@ class TestTextDirectAPI:
         result = extract_text_colors(img)
         assert result is None
 
-    def test_extract_text_colors_with_exclude(self):
-        """Background color exclusion should work."""
+    def test_extract_text_colors_with_palette(self):
+        """Palette-informed background exclusion should work."""
         from coriro.measure.text import extract_text_colors
         img = _image_with_text_like_region(bg=(255, 255, 255), fg=(0, 0, 0))
-        result = extract_text_colors(img, exclude_colors=[(255, 255, 255)])
+        result = extract_text_colors(img, palette=[(255, 255, 255)])
         # Whether OCR finds text or not, the function should not crash
         if result is not None:
             for wc in result.colors:
-                # Excluded white shouldn't appear as text color
+                # Background white shouldn't appear as text color
                 assert not (wc.color.L > 0.95 and wc.color.is_achromatic)
 
 
@@ -254,7 +254,9 @@ class TestSmoothIntegration:
         img = _two_tone_image([255, 0, 0], [0, 0, 255])
         m_raw = measure(img, smooth=False, include_hash=False)
         m_smooth = measure(img, smooth=True, include_hash=False)
-        assert abs(len(m_raw.palette) - len(m_smooth.palette)) <= 2
+        # CNN smoothing can introduce edge artifacts that chroma supplementation
+        # picks up, so allow a wider tolerance on synthetic images.
+        assert abs(len(m_raw.palette) - len(m_smooth.palette)) <= 4
 
     def test_smooth_with_text_uses_original_pixels(self):
         """Text extraction should use unsmoothed pixels even when smooth=True."""

@@ -69,12 +69,60 @@ def _dedup_novel(
     return accepted
 
 
+def _hue_distance(h1: float, h2: float) -> float:
+    """Angular distance between two hues in degrees (0-180)."""
+    d = abs(h1 - h2) % 360
+    return min(d, 360 - d)
+
+
+def _dedup_novel_hue_aware(
+    candidates: list[WeightedColor],
+    threshold: float,
+    hue_sector: float = 40.0,
+) -> list[WeightedColor]:
+    """Hue-aware dedup for chroma supplements.
+
+    Same-hue-family colors (hue within *hue_sector* degrees) are deduped at
+    a relaxed 1.5× threshold — they are lightness variants of the same token.
+    Cross-hue colors are only deduped at the base threshold, preserving
+    diversity across distinct hue families (e.g. gold vs sage).
+    """
+    accepted: list[WeightedColor] = []
+    accepted_labs: list[NDArray[np.float64]] = []
+    accepted_hues: list[float] = []
+
+    for wc in candidates:
+        wc_lab = _wc_to_lab(wc)
+        wc_hue = wc.color.H if wc.color.H is not None else -1.0
+
+        is_dup = False
+        for a_lab, a_hue in zip(accepted_labs, accepted_hues):
+            de = _delta_e_lab(wc_lab, a_lab)
+            same_family = (
+                wc_hue >= 0 and a_hue >= 0
+                and _hue_distance(wc_hue, a_hue) < hue_sector
+            )
+            # Same hue family: dedup more aggressively (1.5× threshold)
+            # Cross-hue: only dedup at base threshold
+            effective = threshold * 1.5 if same_family else threshold
+            if de < effective:
+                is_dup = True
+                break
+
+        if not is_dup:
+            accepted.append(wc)
+            accepted_labs.append(wc_lab)
+            accepted_hues.append(wc_hue)
+
+    return accepted
+
+
 def find_chroma_outliers(
     oklch_flat: NDArray[np.float64],
     rgb_flat: NDArray[np.uint8],
     existing_palette: tuple[WeightedColor, ...],
     *,
-    z_threshold: float = 2.0,
+    z_threshold: float = 1.5,
     min_outlier_pixels: int = 100,
     novelty_threshold: float = 0.08,
     max_supplements: int = 3,
@@ -83,7 +131,7 @@ def find_chroma_outliers(
     Find colors with unusually high chroma relative to the image mean.
 
     A yellow CTA (C~0.17) on a blue page (mean C~0.05, std~0.03) sits at
-    z-score ~4.0, well above the default threshold of 2.0.
+    z-score ~4.0, well above the default threshold of 1.5.
 
     Args:
         oklch_flat: (N, 3) OKLCH pixel array
@@ -99,15 +147,26 @@ def find_chroma_outliers(
     """
     n_total = len(oklch_flat)
 
-    # 1. Compute chroma statistics
+    # 1. Compute chroma statistics — filter achromatic pixels (C < 0.02)
+    #    to prevent the massive achromatic mass from inflating the threshold.
     chroma = oklch_flat[:, 1]
-    c_mean = float(np.mean(chroma))
-    c_std = float(np.std(chroma))
+    chromatic_mask = chroma > 0.02
+    n_chromatic = int(np.sum(chromatic_mask))
 
-    if c_std < 1e-6:
-        return ()  # Uniform chroma — nothing to find
+    if n_chromatic < min_outlier_pixels:
+        # Too few chromatic pixels — use absolute floor only
+        threshold = 0.05
+    else:
+        chromatic_chroma = chroma[chromatic_mask]
+        c_mean = float(np.mean(chromatic_chroma))
+        c_std = float(np.std(chromatic_chroma))
+        if c_std < 1e-6:
+            threshold = c_mean
+        else:
+            threshold = c_mean + z_threshold * c_std
 
-    threshold = c_mean + z_threshold * c_std
+    # Absolute floor: any clearly chromatic pixel is worth evaluating
+    threshold = max(threshold, 0.05)
 
     # 2. Mask high-chroma pixels
     outlier_mask = chroma > threshold
@@ -118,7 +177,7 @@ def find_chroma_outliers(
 
     # 3. Cluster the outlier pixels
     outlier_rgb = rgb_flat[outlier_mask]
-    outlier_palette = extract_palette_mode(outlier_rgb, n_colors=max_supplements + 2, min_count=1)
+    outlier_palette = extract_palette_mode(outlier_rgb, n_colors=max_supplements * 3, min_count=1)
 
     # 4. Filter by novelty (ΔE from existing palette)
     if not existing_palette:
@@ -135,8 +194,8 @@ def find_chroma_outliers(
     if not novel:
         return ()
 
-    # 5. Internal dedup — prevent near-duplicate supplements (e.g. two yellows)
-    novel = _dedup_novel(novel, novelty_threshold)
+    # 5. Hue-aware dedup to preserve cross-hue diversity in supplements.
+    novel = _dedup_novel_hue_aware(novel, novelty_threshold)
 
     # 6. Recompute weights relative to full image
     results = []
@@ -166,9 +225,9 @@ def find_uncovered_colors(
     palette: tuple[WeightedColor, ...],
     *,
     coverage_threshold: float = 0.15,
-    min_uncovered_pct: float = 0.005,
+    min_uncovered_pct: float = 0.002,
     novelty_threshold: float = 0.10,
-    max_supplements: int = 2,
+    max_supplements: int = 3,
     chunk_size: int = 500_000,
 ) -> tuple[WeightedColor, ...]:
     """

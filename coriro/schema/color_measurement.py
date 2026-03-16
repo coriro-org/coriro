@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-ColorMeasurement v1.0 — Canonical schema for color extraction.
+ColorMeasurement — Canonical schema for color extraction (schema v1.0).
 
 Design principles:
 - Immutable: All types are frozen dataclasses

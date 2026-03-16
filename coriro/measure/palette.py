@@ -14,7 +14,6 @@ For photos/gradients, k-means is more robust.
 
 from __future__ import annotations
 
-from collections import Counter
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
@@ -32,14 +31,14 @@ def extract_palette(
 ) -> tuple[WeightedColor, ...]:
     """
     Extract a palette of dominant colors from OKLCH pixels.
-    
+
     Uses k-means clustering in OKLCH space. Colors are returned
     ordered by weight (most dominant first).
-    
+
     For each cluster, we record:
     - OKLCH centroid (average) for perceptual reasoning
     - sample_hex (nearest real pixel to centroid) for implementation accuracy
-    
+
     Args:
         oklch_pixels: Array of shape (N, 3) with OKLCH values
         n_colors: Number of colors to extract (may return fewer if image has fewer unique colors)
@@ -47,47 +46,47 @@ def extract_palette(
         seed: Random seed for reproducibility (None for random)
         rgb_pixels: Optional array of shape (N, 3) with original RGB [0-255] values.
             If provided, sample_hex will be set to the nearest real pixel.
-        
+
     Returns:
         Tuple of WeightedColor, ordered by weight descending.
         Weights sum to 1.0.
     """
     if len(oklch_pixels) == 0:
         raise ValueError("Cannot extract palette from empty pixel array")
-    
+
     n_pixels = len(oklch_pixels)
-    
+
     # K-means clustering (will adjust k internally based on unique colors)
     centroids, labels = _kmeans(
-        oklch_pixels, 
-        k=n_colors, 
-        max_iter=max_iter, 
+        oklch_pixels,
+        k=n_colors,
+        max_iter=max_iter,
         seed=seed
     )
-    
+
     # Actual number of clusters found
     actual_k = len(centroids)
-    
+
     # Count pixels per cluster
     unique, counts = np.unique(labels, return_counts=True)
     cluster_sizes = dict(zip(unique, counts))
-    
+
     # Build weighted colors
     weighted = []
     total = n_pixels
-    
+
     for i in range(actual_k):
         L, C, H = centroids[i]
         count = cluster_sizes.get(i, 0)
         weight = count / total
-        
+
         # Skip clusters with no pixels
         if weight == 0:
             continue
-        
+
         # Handle achromatic colors (low chroma)
         h_value = float(H) if C >= 0.02 else None
-        
+
         # Find nearest real pixel to centroid (for sample_hex)
         sample_hex = None
         if rgb_pixels is not None:
@@ -98,7 +97,7 @@ def extract_palette(
                 labels=labels,
                 cluster_id=i,
             )
-        
+
         color = OKLCHColor(
             L=float(np.clip(L, 0.0, 1.0)),
             C=float(max(0.0, C)),
@@ -106,15 +105,15 @@ def extract_palette(
             sample_hex=sample_hex,
         )
         weighted.append((color, weight))
-    
+
     # Sort by weight descending
     weighted.sort(key=lambda x: x[1], reverse=True)
-    
+
     # Normalize weights to sum to 1.0 exactly
     total_weight = sum(w for _, w in weighted)
     if total_weight > 0:
         weighted = [(c, w / total_weight) for c, w in weighted]
-    
+
     return tuple(WeightedColor(color=c, weight=w) for c, w in weighted)
 
 
@@ -127,17 +126,17 @@ def _find_nearest_pixel_hex(
 ) -> str:
     """
     Find the nearest real pixel to the centroid within a cluster.
-    
+
     Returns the hex value of that pixel. This is the "representative pixel"
     that provides implementation-accurate hex values.
-    
+
     Args:
         centroid: (3,) array with OKLCH centroid values
         oklch_pixels: (N, 3) array of all OKLCH pixels
         rgb_pixels: (N, 3) array of corresponding RGB pixels [0-255]
         labels: (N,) array of cluster assignments
         cluster_id: Which cluster to search
-        
+
     Returns:
         Hex string like "#F6C767"
     """
@@ -145,16 +144,16 @@ def _find_nearest_pixel_hex(
     mask = labels == cluster_id
     cluster_oklch = oklch_pixels[mask]
     cluster_rgb = rgb_pixels[mask]
-    
+
     if len(cluster_oklch) == 0:
         # Fallback: compute from centroid
         from coriro.measure.colorspace import oklch_to_hex
         return oklch_to_hex(centroid[0], centroid[1], centroid[2])
-    
+
     # Find nearest pixel to centroid (Euclidean distance in OKLCH)
     distances = np.sum((cluster_oklch - centroid) ** 2, axis=1)
     nearest_idx = np.argmin(distances)
-    
+
     # Get RGB of nearest pixel
     r, g, b = cluster_rgb[nearest_idx]
     return f"#{int(r):02X}{int(g):02X}{int(b):02X}"
@@ -168,16 +167,16 @@ def _kmeans(
 ) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
     """
     Vectorized k-means implementation.
-    
+
     Uses k-means++ initialization for better convergence.
     Fully vectorized for performance on large pixel arrays.
-    
+
     Args:
         data: Array of shape (N, D)
         k: Number of clusters
         max_iter: Maximum iterations
         seed: Random seed
-        
+
     Returns:
         (centroids, labels) where:
         - centroids: (k, D) array of cluster centers
@@ -185,24 +184,24 @@ def _kmeans(
     """
     rng = np.random.default_rng(seed)
     n, d = data.shape
-    
+
     # Find unique points to avoid issues with duplicates
     unique_data = np.unique(data, axis=0)
     n_unique = len(unique_data)
-    
+
     # Adjust k if we have fewer unique points
     k = min(k, n_unique)
-    
+
     if k == 0:
         raise ValueError("No valid data points for clustering")
-    
+
     # k-means++ initialization
     centroids = np.empty((k, d), dtype=np.float64)
-    
+
     # First centroid: random unique point
     idx = rng.integers(n_unique)
     centroids[0] = unique_data[idx]
-    
+
     # Remaining centroids: weighted by distance squared
     for i in range(1, k):
         # Distance to nearest existing centroid (vectorized)
@@ -211,7 +210,7 @@ def _kmeans(
             axis=2
         )
         dists = np.min(dists_to_centroids, axis=1)
-        
+
         # Handle case where all distances are zero
         total = dists.sum()
         if total == 0:
@@ -221,13 +220,13 @@ def _kmeans(
             probs = dists / total
             idx = rng.choice(n_unique, p=probs)
             centroids[i] = unique_data[idx]
-    
+
     # Iterate on full data (vectorized)
     labels = np.zeros(n, dtype=np.int64)
-    
+
     for _ in range(max_iter):
         old_labels = labels.copy()
-        
+
         # Vectorized distance computation: (N, k)
         # Using broadcasting: data is (N, D), centroids is (k, D)
         dists = np.sum(
@@ -235,17 +234,17 @@ def _kmeans(
             axis=2
         )
         labels = np.argmin(dists, axis=1)
-        
+
         # Check convergence
         if np.array_equal(labels, old_labels):
             break
-        
+
         # Update centroids
         for j in range(k):
             mask = labels == j
             if np.any(mask):
                 centroids[j] = data[mask].mean(axis=0)
-    
+
     return centroids, labels
 
 
@@ -265,7 +264,7 @@ def extract_dominant_color(
     """
     if len(oklch_pixels) == 0:
         raise ValueError("Cannot extract dominant color from empty pixel array")
-    
+
     # Use palette extraction with k=1 for consistency
     palette = extract_palette(oklch_pixels, n_colors=1)
     return palette[0].color
@@ -278,54 +277,68 @@ def extract_palette_mode(
 ) -> tuple[WeightedColor, ...]:
     """
     Extract palette using MODE (most common exact pixel values).
-    
+
     This is more accurate than k-means for simple screenshots because
     it finds the actual pixel values rather than averaged centroids.
-    
+
     Args:
         rgb_pixels: Array of shape (N, 3) with RGB values [0-255]
         n_colors: Maximum number of colors to return
         min_count: Minimum pixel count to include a color
-        
+
     Returns:
         Tuple of WeightedColor with exact pixel values, ordered by frequency.
         Weights are normalized to sum to 1.0.
     """
     if len(rgb_pixels) == 0:
         raise ValueError("Cannot extract palette from empty pixel array")
-    
-    # Count exact pixel values
-    rgb_tuples = [tuple(p) for p in rgb_pixels]
-    counter = Counter(rgb_tuples)
-    
-    # Get top colors
-    top_colors = counter.most_common(n_colors)
-    
-    # Filter by min_count and collect
-    filtered = [(rgb, count) for rgb, count in top_colors if count >= min_count]
-    
-    if not filtered:
-        # Fallback: just take top colors regardless of min_count
-        filtered = top_colors[:n_colors]
-    
-    # Calculate total for normalization
-    total_count = sum(count for _, count in filtered)
-    
+
+    # Vectorized pixel counting: pack (N,3) uint8 → (N,) uint32, then np.unique
+    packed = (rgb_pixels[:, 0].astype(np.uint32) << 16 |
+              rgb_pixels[:, 1].astype(np.uint32) << 8 |
+              rgb_pixels[:, 2].astype(np.uint32))
+    unique_packed, counts = np.unique(packed, return_counts=True)
+
+    # Sort by frequency (descending)
+    order = np.argsort(-counts)
+    unique_packed = unique_packed[order]
+    counts = counts[order]
+
+    # Take top n_colors, filter by min_count
+    top_n = min(n_colors, len(unique_packed))
+    top_packed = unique_packed[:top_n]
+    top_counts = counts[:top_n]
+
+    mask = top_counts >= min_count
+    if not mask.any():
+        # Fallback: take top colors regardless of min_count
+        mask = np.ones(top_n, dtype=bool)
+
+    top_packed = top_packed[mask]
+    top_counts = top_counts[mask]
+
+    # Unpack uint32 → (K, 3) uint8 for batch OKLCH conversion
+    rgb_result = np.stack([
+        ((top_packed >> 16) & 0xFF).astype(np.uint8),
+        ((top_packed >> 8) & 0xFF).astype(np.uint8),
+        (top_packed & 0xFF).astype(np.uint8),
+    ], axis=1)
+
+    # Batch convert all result colors to OKLCH at once
+    oklch_all = srgb_uint8_to_oklch(rgb_result)
+
+    # Normalize weights
+    total_count = top_counts.sum()
+
     results = []
-    for (r, g, b), count in filtered:
-        weight = count / total_count  # Normalized to sum to 1.0
-        
-        # Convert to OKLCH
-        rgb_array = np.array([r, g, b], dtype=np.uint8)
-        oklch = srgb_uint8_to_oklch(rgb_array)
-        L, C, H = float(oklch[0]), float(oklch[1]), float(oklch[2])
-        
-        # Mark as achromatic if low chroma
+    for i in range(len(top_packed)):
+        r, g, b = int(rgb_result[i, 0]), int(rgb_result[i, 1]), int(rgb_result[i, 2])
+        weight = float(top_counts[i]) / float(total_count)
+
+        L, C, H = float(oklch_all[i, 0]), float(oklch_all[i, 1]), float(oklch_all[i, 2])
         h_value = H if C >= 0.02 else None
-        
-        # Store exact hex as sample_hex
         hex_val = f"#{r:02X}{g:02X}{b:02X}"
-        
+
         color = OKLCHColor(
             L=L,
             C=C,
@@ -333,6 +346,5 @@ def extract_palette_mode(
             sample_hex=hex_val,
         )
         results.append(WeightedColor(color=color, weight=weight))
-    
-    return tuple(results)
 
+    return tuple(results)

@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Color measurement instrument for vision-language model (VLM) pipelines"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     { name = "Saad Irfan", email = "saad@coriro.org" },
 ]
@@ -29,7 +29,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -45,10 +44,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-text = ["pytesseract>=0.3.0"]
+text = ["onnxtr[cpu]>=0.8.0", "pytesseract>=0.3.0"]
 accents = ["scipy>=1.7.0"]
 cnn = ["torch>=2.0.0", "timm>=0.9.0"]
 all = [
+    "onnxtr[cpu]>=0.8.0",
     "pytesseract>=0.3.0",
     "scipy>=1.7.0",
     "torch>=2.0.0",

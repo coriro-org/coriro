@@ -24,12 +24,9 @@ from coriro.measure.colorspace import delta_e_oklch
 class ConsolidationConfig:
     """Configuration for color consolidation."""
     
-    # ΔE threshold for collapsing similar colors (OKLab scale)
-    # OKLab ΔE is 0-1 scale, NOT 0-100 like CIEDE2000!
-    # 0.02 = imperceptible
-    # 0.05 = just noticeable
-    # 0.10 = clearly different
-    # 0.30+ = very different colors
+    # ΔE threshold for collapsing similar colors.
+    # OKLab ΔE scale: 0.02 imperceptible, 0.05 just noticeable,
+    # 0.10 clearly different, 0.30+ very different.
     delta_e_threshold: float = 0.03  # Conservative: only merge near-identical
     
     # Maximum colors in final palette (after collapse)
@@ -37,7 +34,7 @@ class ConsolidationConfig:
     
     # Minimum weight (as fraction) to keep in final palette
     # Colors below this are filtered out as noise
-    min_weight: float = 0.01  # 1%
+    min_weight: float = 0.005  # 0.5%
     
     # Black normalization: L < threshold and C < chroma_threshold
     black_l_threshold: float = 0.25

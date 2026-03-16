@@ -6,7 +6,7 @@ This notice is provided as a courtesy and attribution summary for direct depende
 and optional dependencies referenced by this package. It is not a complete transitive
 dependency inventory.
 
-Last reviewed: 2026-02-25
+Last reviewed: 2026-03-15
 
 ## Core dependencies
 
@@ -25,6 +25,15 @@ Last reviewed: 2026-02-25
 - License (PyPI metadata): `MIT-CMU`
 
 ## Optional Python dependencies (extras)
+
+### OnnxTR (`onnxtr`) — extra: `text`
+- Use in this project: primary text detection engine (DBNet + MobileNetV3)
+- Upstream: https://pypi.org/project/onnxtr/
+- Source: https://github.com/felixdittrich92/OnnxTR
+- Author (PyPI metadata): Felix Dittrich
+- License (PyPI metadata): Apache License 2.0
+- Note: OnnxTR depends on ONNX Runtime (`onnxruntime`, MIT License, Microsoft Corporation,
+  https://github.com/microsoft/onnxruntime) for model inference.
 
 ### pytesseract (`pytesseract`) — extra: `text`
 - Upstream: https://pypi.org/project/pytesseract/
@@ -48,7 +57,7 @@ Last reviewed: 2026-02-25
 
 ### PyTorch Image Models (`timm`) — extra: `cnn`
 - Upstream: https://pypi.org/project/timm/
-- Source: https://github.com/rwightman/pytorch-image-models
+- Source: https://github.com/huggingface/pytorch-image-models
 - Author (PyPI metadata): Ross Wightman
 - License (PyPI metadata): Apache-2.0
 

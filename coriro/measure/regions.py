@@ -19,7 +19,7 @@ from coriro.schema import (
     SpatialBins,
     REGION_IDS,
 )
-from coriro.measure.palette import extract_palette
+from coriro.measure.palette import extract_palette, extract_palette_mode
 
 
 def _grid_dimensions(grid: GridSize) -> int:
@@ -88,12 +88,19 @@ def extract_spatial_bins(
                     f"is too small for a {grid.value} grid (minimum {dim}x{dim} pixels)"
                 )
             
-            # Extract mini-palette for this region (with sample_hex if RGB available)
-            palette = extract_palette(
-                region_pixels_flat,
-                n_colors=colors_per_region,
-                rgb_pixels=region_rgb_flat,
-            )
+            # Extract mini-palette using mode (exact pixel frequencies).
+            # Reports the most frequent real pixels per region.
+            if region_rgb_flat is not None:
+                palette = extract_palette_mode(
+                    region_rgb_flat,
+                    n_colors=colors_per_region,
+                )
+            else:
+                # Fallback to k-means if RGB not available
+                palette = extract_palette(
+                    region_pixels_flat,
+                    n_colors=colors_per_region,
+                )
             
             regions.append(RegionColor(
                 region_id=region_ids[region_idx],

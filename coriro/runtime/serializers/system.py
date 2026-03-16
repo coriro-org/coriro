@@ -15,6 +15,32 @@ import json
 
 from coriro.runtime.serializers.base import SerializerFormat
 from coriro.schema import ColorMeasurement
+from coriro.schema.color_measurement import GridSize
+
+
+_ROW_LABELS = {
+    2: {1: "top", 2: "bottom"},
+    3: {1: "top", 2: "middle", 3: "bottom"},
+    4: {1: "top", 2: "upper", 3: "lower", 4: "bottom"},
+}
+
+_COL_LABELS = {
+    2: {1: "left", 2: "right"},
+    3: {1: "left", 2: "center", 3: "right"},
+    4: {1: "left", 2: "center-left", 3: "center-right", 4: "right"},
+}
+
+
+def _spatial_region_names(grid: GridSize) -> dict[str, str]:
+    """Generate human-readable names for region IDs based on actual grid size."""
+    dim = {GridSize.GRID_2X2: 2, GridSize.GRID_3X3: 3, GridSize.GRID_4X4: 4}[grid]
+    rows = _ROW_LABELS[dim]
+    cols = _COL_LABELS[dim]
+    return {
+        f"R{r}C{c}": f"{rows[r]}-{cols[c]}"
+        for r in range(1, dim + 1)
+        for c in range(1, dim + 1)
+    }
 
 
 def to_system_prompt(
@@ -49,8 +75,8 @@ def to_system_prompt(
         2. White (40%) -- L=0.98, C=0.01
 
         **Spatial Distribution (2x2 grid):**
-        - R1C1 (top-left): Light blue
-        - R1C2 (top-right): White
+        - R1C1 (top-left): Light blue (72%), White (18%), Gray (10%)
+        - R1C2 (top-right): White (85%), Light blue (10%), Gray (5%)
         ...
     """
     if format == SerializerFormat.NATURAL:
@@ -97,29 +123,20 @@ def _to_natural(
         grid = measurement.spatial.grid.value
         lines.append(f"**Spatial Distribution ({grid} grid):**")
 
-        region_names = {
-            "R1C1": "top-left",
-            "R1C2": "top-right",
-            "R1C3": "top-center-right",
-            "R1C4": "top-far-right",
-            "R2C1": "upper-left",
-            "R2C2": "upper-right",
-            "R2C3": "upper-center-right",
-            "R2C4": "upper-far-right",
-            "R3C1": "lower-left",
-            "R3C2": "lower-right",
-            "R3C3": "lower-center-right",
-            "R3C4": "lower-far-right",
-            "R4C1": "bottom-left",
-            "R4C2": "bottom-right",
-            "R4C3": "bottom-center-right",
-            "R4C4": "bottom-far-right",
-        }
+        region_names = _spatial_region_names(measurement.spatial.grid)
 
         for region in measurement.spatial.regions:
             name = region_names.get(region.region_id, region.region_id)
-            desc = _describe_color(region.dominant, short=True)
-            lines.append(f"- {region.region_id} ({name}): {desc}")
+            # Show top-3 palette colors with percentages for spatial layout context
+            palette_parts = []
+            for wc in region.palette[:3]:
+                pct = wc.weight * 100
+                color_name = _describe_color(wc.color, short=True)
+                if pct >= 1.0:
+                    palette_parts.append(f"{color_name} ({pct:.0f}%)")
+                else:
+                    palette_parts.append(f"{color_name} (<1%)")
+            lines.append(f"- {region.region_id} ({name}): {', '.join(palette_parts)}")
         lines.append("")
 
     return "\n".join(lines)
