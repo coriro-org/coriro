@@ -70,8 +70,8 @@ def to_tool_output(
             { "hex": "#121212", "oklch": "L0.18/C0.00", "weight": 0.21 }
           ],
           "spatial": {
-            "R1C1": "#5C0D07",
-            "R1C2": "#5C0D07"
+            "R1C1": { "hex": "#5C0D07", "coverage": 0.72 },
+            "R1C2": { "hex": "#5C0D07", "coverage": 0.95 }
           }
         }
     """
@@ -158,10 +158,13 @@ def _build_consolidated_data(
         for wc in measurement.palette
     ]
 
-    # Spatial: hex-first (opt-in — low signal for most web screenshots)
+    # Spatial: hex + coverage weight (opt-in — low signal for most web screenshots)
     if include_spatial:
         result["spatial"] = {
-            region.region_id: _get_hex(region.dominant)
+            region.region_id: {
+                "hex": _get_hex(region.dominant),
+                "coverage": round(region.palette[0].weight, 2),
+            }
             for region in measurement.spatial.regions
         }
 

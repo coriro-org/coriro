@@ -19,7 +19,7 @@ Quick start::
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 from coriro.measure import measure
 from coriro.schema import (

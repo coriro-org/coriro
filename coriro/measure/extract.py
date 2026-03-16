@@ -54,13 +54,13 @@ def measure(
 ) -> ColorMeasurement:
     """
     Extract a complete color measurement from an image.
-    
+
     This is the primary API for Coriro. It produces a ColorMeasurement
     containing:
     - Global dominant color
     - Global palette (weighted colors, consolidated)
     - Spatial color distribution (required)
-    
+
     Args:
         image: One of:
             - Path to image file (str or Path) — recommended, handles ICC
@@ -87,7 +87,8 @@ def measure(
             (default: 0.03 = conservative, only near-identical colors)
         max_output_colors: Final palette size after consolidation (default: 5)
         include_text: If True, run OCR-based text color extraction (default: False).
-            Requires pytesseract and Tesseract OCR to be installed.
+            Requires onnxtr or pytesseract. OnnxTR (neural) is preferred;
+            Tesseract is used as fallback if onnxtr is not installed.
             This is an orthogonal pass that does not affect the surface palette.
         include_accents: If True, run solid region detection for accent colors
             (default: False). Detects small but significant UI elements.
@@ -98,10 +99,10 @@ def measure(
             This smooths gradients and reduces anti-aliasing artifacts without
             adding semantic interpretation. The CNN is a stabilizer, not a source
             of truth - measurement logic remains the authority.
-        
+
     Returns:
         ColorMeasurement with all extracted data
-        
+
     Example:
         >>> from coriro.measure import measure
         >>> m = measure("image.png")
@@ -123,7 +124,7 @@ def measure(
 
     # Keep original pixels for text extraction (smoothing hurts text accuracy)
     original_pixels = pixels
-    
+
     # Optional: Apply CNN pixel stabilization for surface colors only
     if smooth:
         from coriro.measure.smoother import smooth_image, is_available
@@ -133,8 +134,8 @@ def measure(
                 "Install with: pip install coriro[cnn]"
             )
         pixels = smooth_image(pixels)
-    
-    # Downsample if too large (for performance)
+
+    # Downsample if caller explicitly requested (legacy parameter)
     if max_pixels > 0:
         total_pixels = height * width
         if total_pixels > max_pixels:
@@ -143,12 +144,26 @@ def measure(
             new_width = max(2, int(width * scale))
             pixels = _downsample(pixels, new_height, new_width)
             height, width = new_height, new_width
-    
-    # Convert to OKLCH (keep RGB for sample_hex computation)
-    rgb_flat = pixels.reshape(-1, 3)
-    oklch_pixels = srgb_uint8_to_oklch(pixels)
+
+    # Smart downsampling for palette, spatial, and chroma passes.
+    # Color distribution is preserved at reduced resolution (400px max dim).
+    # Accent detection stays at original resolution for spatial fidelity.
+    _PALETTE_MAX_DIM = 400
+    palette_pixels = pixels
+    palette_h, palette_w = height, width
+    if max(height, width) > _PALETTE_MAX_DIM:
+        scale = _PALETTE_MAX_DIM / max(height, width)
+        palette_h = max(2, int(height * scale))
+        palette_w = max(2, int(width * scale))
+        # NEAREST resampling preserves exact pixel values, which is
+        # critical for mode-based extraction that counts RGB matches.
+        palette_pixels = _downsample_nearest(pixels, palette_h, palette_w)
+
+    # Convert downsampled pixels to OKLCH
+    rgb_flat = palette_pixels.reshape(-1, 3)
+    oklch_pixels = srgb_uint8_to_oklch(palette_pixels)
     oklch_flat = oklch_pixels.reshape(-1, 3)
-    
+
     # Extract global palette
     if use_mode:
         # Mode-based: exact pixel values (more accurate for screenshots)
@@ -156,11 +171,11 @@ def measure(
     else:
         # K-means: averaged centroids (better for photos/gradients)
         palette = extract_palette(
-            oklch_flat, 
+            oklch_flat,
             n_colors=palette_size,
             rgb_pixels=rgb_flat,
         )
-    
+
     # Apply consolidation: collapse similar colors, normalize black/white
     if consolidate:
         config = ConsolidationConfig(
@@ -192,24 +207,24 @@ def measure(
 
     # Extract global dominant color (first in palette)
     dominant = palette[0].color if palette else extract_dominant_color(oklch_flat)
-    
-    effective_grid = _fit_grid(grid, height, width)
 
-    # Extract spatial bins (still uses k-means for regional palettes)
+    effective_grid = _fit_grid(grid, palette_h, palette_w)
+
+    # Extract spatial bins on downsampled pixels
     spatial = extract_spatial_bins(
         oklch_flat,
-        height=height,
-        width=width,
+        height=palette_h,
+        width=palette_w,
         grid=effective_grid,
         colors_per_region=colors_per_region,
         rgb_flat=rgb_flat,
     )
-    
-    # Compute hash if requested
+
+    # Compute hash on original pixels (not downsampled)
     image_hash: Optional[str] = None
     if include_hash:
-        image_hash = f"sha256:{hashlib.sha256(pixels.tobytes()).hexdigest()[:16]}"
-    
+        image_hash = f"sha256:{hashlib.sha256(original_pixels.tobytes()).hexdigest()[:16]}"
+
     # Build measurement metadata (closes the world)
     # This tells LLMs that the palette is complete above the thresholds
     measurement_meta: Optional[MeasurementMeta] = None
@@ -223,31 +238,29 @@ def measure(
             spatial_role="diagnostic",
             perceptual_supplements=n_supplements,
         )
-    
-    # Text colors use different thresholds than surfaces (thin glyphs vs
-    # large areas). Always use original (unsmoothed) pixels for text.
+
+    # Text colors: per-box border-pixel background exclusion.
+    # OnnxTR neural detector (primary), Tesseract OCR (fallback).
+    # Each box identifies its local background from the border ring and
+    # excludes it, isolating text on any surface without a global exclude list.
     text_colors: Optional[TextColorMeasurement] = None
     if include_text:
-        # Convert dominant surface color to RGB for exclusion
-        # This prevents background from appearing in text colors
-        from coriro.measure.colorspace import oklch_to_srgb
-        
-        lch = np.array([dominant.L, dominant.C, dominant.H if dominant.H is not None else 0.0])
-        srgb = oklch_to_srgb(lch.reshape(1, 3)).flatten()
-        # Clamp to [0, 1] and convert to uint8
-        srgb = np.clip(srgb, 0.0, 1.0)
-        dominant_rgb = tuple((srgb * 255).round().astype(np.uint8))
-        
+        # Pass surface palette as RGB tuples for palette-informed bg validation.
+        # Each palette color's sample_hex is the authoritative hex from real pixels.
+        palette_rgb: list[tuple[int, int, int]] = []
+        for wc in palette:
+            hex_val = wc.color.sample_hex
+            if hex_val and hex_val.startswith("#") and len(hex_val) == 7:
+                r = int(hex_val[1:3], 16)
+                g = int(hex_val[3:5], 16)
+                b = int(hex_val[5:7], 16)
+                palette_rgb.append((r, g, b))
+
         text_colors = extract_text_colors(
             original_pixels,  # Always use unsmoothed for text
-            max_colors=3,  # Cap at 3 text colors (main + accent + one extra)
-            min_area_pct=1.0,  # Filter out <1% entries (AA noise)
-            # Use tighter threshold for text (0.15 in OKLab scale, not 1.5)
-            delta_e_threshold=0.15,
-            # Exclude the surface dominant (background) from text colors
-            exclude_colors=[dominant_rgb],
+            palette=palette_rgb if palette_rgb else None,
         )
-    
+
     # Accent region detection: small solid-color UI elements (CTAs, icons)
     # that may fall below the area-dominant threshold.
     accent_regions: Optional[AccentMeasurement] = None
@@ -276,10 +289,10 @@ def _load_image(
 ) -> tuple[NDArray[np.uint8], int, int]:
     """
     Load image from file or validate array.
-    
+
     Applies ICC profile conversion to sRGB if the image has an embedded
     color profile. This ensures colors match what color pickers show.
-    
+
     Returns:
         (pixels, height, width) where pixels has shape (H, W, 3)
     """
@@ -292,24 +305,24 @@ def _load_image(
                 "Pillow is required for image loading. "
                 "Install with: pip install Pillow"
             ) from e
-        
+
         img = Image.open(image)
-        
+
         # Apply ICC profile conversion to sRGB if profile exists
         if 'icc_profile' in img.info:
             try:
                 from PIL import ImageCms
                 import io
-                
+
                 embedded_profile = ImageCms.ImageCmsProfile(
                     io.BytesIO(img.info['icc_profile'])
                 )
                 srgb_profile = ImageCms.createProfile('sRGB')
-                
+
                 # Convert to RGB first if needed
                 if img.mode != "RGB":
                     img = img.convert("RGB")
-                
+
                 # Apply color profile conversion
                 img = ImageCms.profileToProfile(
                     img, embedded_profile, srgb_profile
@@ -322,30 +335,30 @@ def _load_image(
             # No ICC profile - simple RGB conversion
             if img.mode != "RGB":
                 img = img.convert("RGB")
-        
+
         pixels = np.array(img, dtype=np.uint8)
         height, width = pixels.shape[:2]
-        
+
     elif isinstance(image, np.ndarray):
         pixels = image
-        
+
         if pixels.ndim != 3 or pixels.shape[2] != 3:
             raise ValueError(
                 f"Expected (H, W, 3) array, got shape {pixels.shape}"
             )
-        
+
         if pixels.dtype != np.uint8:
             raise ValueError(
                 f"Expected uint8 array, got {pixels.dtype}"
             )
-        
+
         height, width = pixels.shape[:2]
-        
+
     else:
         raise TypeError(
             f"Expected file path or numpy array, got {type(image)}"
         )
-    
+
     return pixels, height, width
 
 
@@ -376,7 +389,31 @@ def _downsample(
         step_h = max(1, h // new_height)
         step_w = max(1, w // new_width)
         return pixels[::step_h, ::step_w]
-    
+
     img = Image.fromarray(pixels)
     img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    return np.array(img, dtype=np.uint8)
+
+
+def _downsample_nearest(
+    pixels: NDArray[np.uint8],
+    new_height: int,
+    new_width: int,
+) -> NDArray[np.uint8]:
+    """Downsample using NEAREST neighbor — preserves exact pixel values.
+
+    Critical for mode-based palette extraction which counts exact RGB matches.
+    Lanczos/bilinear interpolation creates new pixel values that don't exist
+    in the original image, destroying the mode signal.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        h, w = pixels.shape[:2]
+        step_h = max(1, h // new_height)
+        step_w = max(1, w // new_width)
+        return pixels[::step_h, ::step_w]
+
+    img = Image.fromarray(pixels)
+    img = img.resize((new_width, new_height), Image.Resampling.NEAREST)
     return np.array(img, dtype=np.uint8)

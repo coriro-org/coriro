@@ -1,7 +1,7 @@
 # Coriro
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 Color measurement runtime for vision-language and multimodal inference pipelines.
 
@@ -46,9 +46,9 @@ But the value extends beyond compensating for encoder limitations. Even a model 
 │  │  Coriro  │───▶│  Language Model Context        │  │
 │  │ measure()│    │  Image + Color sidecar data    │  │
 │  └──────────┘    │  = Complete information        │  │
-│  Pixel-level     └────────────────────────────────┘  │
-│  colorimetry                                         │
-│  (sidecar)                                           │
+│  Accurate        └────────────────────────────────┘  │
+│  Color Measurement                                   │
+│                                                      │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -59,7 +59,7 @@ But the value extends beyond compensating for encoder limitations. Even a model 
 ## Use cases
 
 - **VLM color grounding** — Provide measured palettes as structured data alongside the image, compensating for vision-encoder color loss documented in published benchmarks across many models.
-- **Screenshot-to-code** — Provide exact hex values and spatial color distribution so code generation uses measured colors instead of vision-inferred estimates.
+- **Screenshot-to-code** — Provide accurate color measurements so code generation uses measured colors instead of vision-inferred estimates.
 - **Product color metadata** — Attach verifiable weighted palettes to product listings for perceptual color search, cross-SKU consistency checks, and return-reduction workflows.
 - **Design system compliance** — Measure rendered screenshots against design token definitions using perceptual ΔE distance to catch cross-platform drift.
 - **Accessibility contrast auditing** — Compute contrast from rendered pixels in perceptually uniform OKLCH, including text over gradients and background images that DOM-only scanners can miss.
@@ -77,10 +77,13 @@ Core installation requires only `numpy` and `Pillow`. Optional passes have separ
 
 | Feature | Install | Requires |
 |---------|---------|----------|
-| Text colors | `pip install coriro[text]` | `pytesseract` + system Tesseract OCR |
+| Text colors | `pip install coriro[text]` | `onnxtr[cpu]` (primary) + `pytesseract` (fallback) |
 | Accent regions | `pip install coriro[accents]` | `scipy` |
 | CNN smoothing | `pip install coriro[cnn]` | `torch`, `timm` |
 | All features | `pip install coriro[all]` | All of the above |
+
+> **Text detection note:** Coriro uses `onnxtr[cpu]` by default and falls back to `pytesseract` when needed. The fallback requires the Tesseract system binary. For NVIDIA GPU acceleration, use `onnxtr[gpu]`.
+
 
 ---
 
@@ -116,14 +119,14 @@ Three additional passes are available. Each is off by default and independently 
 m = measure(
     "image.png",
     smooth=True,            # CNN pixel stabilization (requires torch + timm)
-    include_text=True,      # Text foreground colors via OCR (requires pytesseract)
+    include_text=True,      # Text foreground colors via OnnxTR/Tesseract
     include_accents=True,   # Solid accent region detection (requires scipy)
 )
 ```
 
 > **CNN smoothing** stabilizes color surfaces before extraction — reducing noise from compression artifacts, gradient banding, and anti-aliasing. It is off by default because it requires `torch` + `timm` (`pip install coriro[cnn]`). If your environment already includes `torch` + `timm`, consider enabling `smooth=True` for improved measurement quality.
 
-> **Latency control:** Coriro processes images at full resolution by default (`max_pixels=0`). For latency-sensitive pipelines, set `max_pixels` to cap the pixel count before processing. Because color measurement is statistical, equivalent palettes are usually preserved at reduced resolution.
+> **Resolution:** Coriro internally downsamples to 400px max dimension (NEAREST resampling) for palette, spatial, and chroma passes. Text and accent detection run at full resolution. The `max_pixels` parameter applies an additional user-specified cap before processing — set it for latency-sensitive pipelines.
 
 ### Pipeline integration
 
@@ -134,7 +137,7 @@ from coriro.runtime import to_tool_output
 m = measure("image.png", include_text=True)
 
 # Structured measurement — pass to your pipeline
-coriro_data = to_tool_output(m, consolidated=True)
+coriro_data = to_tool_output(m, consolidated=True, include_spatial=True)
 ```
 
 The consolidated format produces:
@@ -155,7 +158,13 @@ The consolidated format produces:
     { "hex": "#1A1A2E", "oklch": "L0.23/C0.04/H283", "weight": 0.62 },
     { "hex": "#E8453C", "oklch": "L0.63/C0.20/H28", "weight": 0.23 },
     { "hex": "#F5F5F5", "oklch": "L0.97/C0.00", "weight": 0.15 }
-  ]
+  ],
+  "spatial": {
+    "R1C1": { "hex": "#1A1A2E", "coverage": 0.85 },
+    "R1C2": { "hex": "#E8453C", "coverage": 0.60 },
+    "R2C1": { "hex": "#1A1A2E", "coverage": 0.92 },
+    "R2C2": { "hex": "#F5F5F5", "coverage": 0.78 }
+  }
 }
 ```
 
@@ -217,18 +226,18 @@ That's the entire service — `pip install coriro fastapi uvicorn python-multipa
 ### Core (always on)
 
 - **Dominant color** — The single most prominent color, extracted from the weighted palette
-- **Area-ranked global palette** — Colors ordered by pixel area, represented in perceptually uniform OKLCH with implementation-accurate `sample_hex` values from real pixels
+- **Area-ranked global palette** — Colors ordered by pixel area, represented in perceptually uniform OKLCH with hex values sampled from real pixels
 - **ICC profile conversion** — Automatically converts Display P3, Adobe RGB, and other profiled images to sRGB before measurement via `PIL.ImageCms`, ensuring colors match what color pickers show
 - **Color consolidation** — Collapses near-identical colors using perceptual ΔE thresholds in OKLab space, merges black/white families into single representatives, and limits output to a design-friendly palette size
 - **Chroma-aware supplementation** — Two safety-net passes catch perceptually significant colors missed by area-dominant extraction:
-  - *Chroma outliers:* High-saturation pixels via z-score (>2.0 std deviations above mean chroma). Catches a yellow CTA button on a low-chroma blue page.
+  - *Chroma outliers:* High-saturation pixels via z-score (>1.5 std deviations above achromatic-filtered mean chroma). Catches a yellow CTA button on a low-chroma blue page.
   - *Uncovered colors:* Clusters pixels with ΔE > 0.15 from the nearest palette entry. Catches distinct color groups below the area threshold.
-- **Spatial color distribution** — Fixed grid partitioning (2×2, 3×3, or 4×4) with per-region palettes. Preserves *where* colors appear — not just *which* colors exist
+- **Spatial color distribution** — Fixed grid partitioning (2×2, 3×3, or 4×4) with per-region palettes extracted via mode (exact pixel frequencies). Each region reports dominant color with coverage weight and up to 3 palette entries. Preserves *where* colors appear — not just *which* colors exist
 - **Closed-world measurement metadata** — States the palette's measurement criteria (coverage floor, collapse distance, palette cap). If a color isn't listed, it's below the threshold — omission is signal, not oversight
 
 ### Optional passes (independently toggleable, off by default)
 
-- **Text foreground colors** — OCR-assisted glyph region detection via Tesseract, extracting foreground colors with background exclusion. Uses original (unsmoothed) pixels for accuracy
+- **Text foreground colors** — Glyph region detection via OnnxTR (DBNet neural detector, primary) or Tesseract OCR (fallback). Background identified by exterior context ring sampling (3px outside bounding box), with palette-informed validation and pixel-ratio inversion guard. Hue-protected collapse prevents merging distinct color families. Uses original (unsmoothed) pixels for accuracy
 - **Solid accent regions** — Connected-component detection for small but significant solid-color UI elements (CTAs, icons, badges) that fall below area-dominant thresholds. Filters by absolute pixel count, not percentage
 - **CNN-guided pixel stabilization** — Shallow ConvNeXt stem (stem + stage 1 only) for reducing compression artifacts, gradient banding, and anti-aliasing. A stabilizer, not an interpreter — measurement logic remains the authority
 
@@ -242,15 +251,15 @@ Calling `measure()` runs a seven-stage pipeline:
 
 2. **Smooth** *(optional)* — CNN pixel stabilization (`smooth=True`). Runs before extraction to reduce compression artifacts, gradient banding, and anti-aliasing before any color analysis.
 
-3. **Color extraction** — Extracts a raw palette using mode-based counting (exact pixel values, default) or k-means clustering (better for photos and gradients). Colors are represented in OKLCH.
+3. **Color extraction** — Extracts a raw palette using vectorized mode-based counting (exact pixel frequencies via NumPy bit-packing, default) or k-means clustering (better for photos and gradients). Colors are represented in OKLCH.
 
 4. **Consolidation** — Collapses near-identical colors, merges black/white families, and filters noise. Produces a design-friendly palette at the requested size.
 
 5. **Chroma supplementation** — Two passes recover perceptually significant colors missed by area-dominant extraction (high-saturation outliers, uncovered color clusters). Both filter by novelty against the existing palette to avoid duplicates.
 
-6. **Spatial binning** — Partitions the image into a fixed grid and extracts per-region palettes. Region IDs follow reading order: `R1C1` (top-left) through `R2C2` (bottom-right) for a 2×2 grid.
+6. **Spatial binning** — Partitions the image into a fixed grid and extracts per-region palettes using mode (exact pixel frequencies). Each region reports a dominant color with coverage weight. Region IDs follow reading order: `R1C1` (top-left) through `R2C2` (bottom-right) for a 2×2 grid.
 
-7. **Optional passes** — Text colors (OCR) and accent regions (connected components). Each is independently toggleable and does not affect the core palette.
+7. **Optional passes** — Text colors (OnnxTR neural detection with Tesseract fallback, context ring background identification) and accent regions (connected components). Each is independently toggleable and does not affect the core palette.
 
 ---
 
@@ -260,12 +269,13 @@ Coriro separates measurement from delivery. The same `ColorMeasurement` can be s
 
 | Format | Function | Use case |
 |--------|----------|----------|
-| Consolidated JSON | `to_tool_output(m, consolidated=True)` | **Recommended.** Hex + OKLCH + weights in one object |
+| Consolidated JSON | `to_tool_output(m, consolidated=True)` | **Recommended.** Hex + OKLCH + weights + spatial coverage |
 | Compact JSON | `to_tool_output(m, compact=True)` | Token-constrained pipelines |
 | Hex-only | `to_tool_output(m, hex_only=True)` | Minimal output. Implementation tasks only |
 | Full JSON | `to_tool_output(m)` | Complete OKLCH data with all metadata |
-| XML block | `to_context_block(m, format=BlockFormat.XML)` | Inline context injection (Claude, Qwen) |
-| Natural language | `to_system_prompt(m)` | Human-readable for system prompts |
+| Natural language | `m.to_prompt()` | Human-readable for system prompts |
+| XML block | `m.to_xml()` | Inline context injection (Claude, Qwen) |
+| Native JSON | `m.to_json()` | Full schema as JSON |
 | Markdown | `to_context_block(m, format=BlockFormat.MARKDOWN)` | Markdown-fenced JSON |
 
 See the [documentation](https://coriro.org/docs) for more details.
